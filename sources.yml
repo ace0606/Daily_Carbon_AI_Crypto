@@ -1,25 +1,23 @@
 carbon:
   rss:
-    - https://climate.ec.europa.eu/news_en        # European Commission Climate (free)
-    - https://unfccc.int/rss.xml                  # UNFCCC newsroom RSS
+    - https://climate.ec.europa.eu/news_en
+    - https://unfccc.int/rss.xml
   html:
-    - https://icapcarbonaction.com/en/news        # ICAP news (free list page)
-    - https://www.gov.uk/government/announcements # UK govt announcements (free)
+    - https://icapcarbonaction.com/en/news
+    - https://www.gov.uk/government/announcements
 
 ai:
   rss:
-    - https://deepmind.google/discover/blog/rss/  # DeepMind blog RSS (free)
-    - https://openai.com/blog/rss/                # OpenAI blog RSS (free)
+    - https://deepmind.google/discover/blog/rss/
+    - https://openai.com/blog/rss/
   html:
-    - https://digital-strategy.ec.europa.eu/en/news  # EU AI news (free)
-    - https://www.aisi.gov.uk/news                 # UK AI Safety Institute news (free)
+    - https://digital-strategy.ec.europa.eu/en/news
+    - https://www.aisi.gov.uk/news
 
 crypto:
   rss:
-    - https://www.coindesk.com/arc/outboundfeeds/rss/  # CoinDesk RSS (free)
+    - https://www.coindesk.com/arc/outboundfeeds/rss/
   html:
-    - https://www.fca.org.uk/news                      # UK FCA news (free)
+    - https://www.fca.org.uk/news
 
-linkedin_public_posts:
-  # Optional: add public LinkedIn post URLs you want included (only if viewable without login).
-  - https://www.linkedin.com/posts/EXAMPLE_PUBLIC_POST
+linkedin_public_posts: []
