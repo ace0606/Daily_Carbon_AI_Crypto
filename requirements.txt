@@ -1,0 +1,9 @@
+feedparser
+requests
+readability-lxml
+beautifulsoup4
+lxml
+python-dateutil
+pytz
+sumy
+pyyaml
