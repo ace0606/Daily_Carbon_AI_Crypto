@@ -1,6 +1,7 @@
-import os, re, textwrap, time, json, html
+import os, re, textwrap, time, html
 from datetime import datetime, timedelta
-from urllib.parse import urlparse
+from urllib.parse import urlparse, urlsplit, urlunsplit, parse_qsl, urlencode
+
 import requests, feedparser, yaml
 from bs4 import BeautifulSoup
 from dateutil import parser as dtparser, tz
@@ -9,121 +10,176 @@ from sumy.parsers.plaintext import PlaintextParser
 from sumy.nlp.tokenizers import Tokenizer
 from sumy.summarizers.text_rank import TextRankSummarizer
 
-LONDON = tz.gettz("Europe/London")
+# ---------- Config
 HEADERS = {"User-Agent": "Mozilla/5.0 (news-bot; +https://github.com/)"}
+LONDON = tz.gettz("Europe/London")
+MAX_ITEMS_PER_SECTION = 3
+MAX_BULLETS_PER_ITEM = 4
+UPDATE_KEYWORDS = {"update", "/update"}  # messages that trigger on-demand send
 
-# ---------- Utilities
-
+# ---------- Time helpers
 def now_london():
     return datetime.now(LONDON)
 
 def within_send_window():
-    # Only send between 07:30 and 07:35 London time (job runs 06:30 & 07:30 UTC)
+    # Allow env override OR user 'update' in last 5 minutes
+    if os.getenv("FORCE_SEND") == "1" or user_sent_update_recently(max_age_seconds=300):
+        return True
     t = now_london()
     return t.hour == 7 and 30 <= t.minute < 35
 
+# ---------- Telegram helpers
+def telegram_api_url(method: str) -> str:
+    token = os.environ["TELEGRAM_BOT_TOKEN"]
+    return f"https://api.telegram.org/bot{token}/{method}"
+
+def send_to_telegram(text: str):
+    payload = {
+        "chat_id": os.environ["TELEGRAM_CHAT_ID"],
+        "text": text,
+        "parse_mode": "HTML",
+        "disable_web_page_preview": True
+    }
+    r = requests.post(telegram_api_url("sendMessage"), json=payload, timeout=20)
+    r.raise_for_status()
+    return r.json()
+
+def telegram_get_updates():
+    r = requests.get(telegram_api_url("getUpdates"), timeout=20)
+    r.raise_for_status()
+    return r.json().get("result", [])
+
+def user_sent_update_recently(max_age_seconds=300) -> bool:
+    """True if the latest message from YOUR chat says 'update' or '/update' and is recent."""
+    chat_id = str(os.environ.get("TELEGRAM_CHAT_ID", ""))
+    if not chat_id:
+        return False
+    updates = telegram_get_updates()
+    latest = None
+    for u in updates:
+        msg = u.get("message") or u.get("edited_message")
+        if not msg:
+            continue
+        if str(msg.get("chat", {}).get("id")) != chat_id:
+            continue
+        latest = msg if (latest is None or msg.get("date", 0) > latest.get("date", 0)) else latest
+    if not latest:
+        return False
+    text = (latest.get("text") or "").strip().lower()
+    if text not in UPDATE_KEYWORDS:
+        return False
+    age = int(time.time()) - int(latest.get("date", 0))
+    return age <= max_age_seconds
+
+# ---------- Fetch/parse helpers
 def clean_url(u: str) -> str:
-    # Strip tracking params
     try:
-        from urllib.parse import urlsplit, urlunsplit, parse_qsl, urlencode
         parts = list(urlsplit(u))
         if parts[3]:
-            qs = [(k,v) for k,v in parse_qsl(parts[3]) if not k.lower().startswith("utm")]
+            qs = [(k, v) for k, v in parse_qsl(parts[3]) if not k.lower().startswith("utm")]
             parts[3] = urlencode(qs)
         return urlunsplit(parts)
     except Exception:
         return u
 
-def bold_key_bits(s: str) -> str:
-    # Bold numbers, currencies, percents, dates, and all-caps abbreviations ≤5 chars
-    patterns = [
-        r"(£|\$|€)\s?\d[\d\,\.]*", r"\b\d{1,3}(,\d{3})+(\.\d+)?\b",
-        r"\b\d+(\.\d+)?\s?%","\\b(?:Q[1-4]|H[1-2]|FY\d{2}|FY\d{4})\\b",
-        r"\b(?:\d{4}|\d{1,2}\s?[A-Z][a-z]{2,9})\b"
-    ]
-    def repl(m): return f"<b>{m.group(0)}</b>"
-    for p in patterns:
-        s = re.sub(p, repl, s)
-    return s
-
-def html_link(text, url):
-    return f'<a href="{html.escape(url, quote=True)}">{html.escape(text)}</a>'
-
-def clamp_sentences(text, max_sentences=4):
-    # Ensure 3–4 full sentences.
-    sents = re.split(r'(?<=[.!?])\s+', text.strip())
-    sents = [s for s in sents if len(s.split()) > 3]
-    return " ".join(sents[:max_sentences])
-
-def summarize_to_sentences(text, max_sents=4):
-    text = re.sub(r'\s+', ' ', text).strip()
-    if not text or len(text.split()) < 40:
-        return [text] if text else []
-    parser = PlaintextParser.from_string(text, Tokenizer("english"))
-    summ = TextRankSummarizer()
-    sents = [str(s) for s in summ(parser.document, max_sents)]
-    # Fallback if TextRank returns nothing
-    if not sents:
-        sents = clamp_sentences(text, max_sents).split(". ")
-    # Make each a full sentence
-    sents = [s if s.endswith(('.', '!', '?')) else s + '.' for s in sents]
-    return sents[:max_sents]
-
-def extract_readable(url):
+def extract_readable(url: str) -> str:
     res = requests.get(url, headers=HEADERS, timeout=20)
     res.raise_for_status()
     doc = Document(res.text)
-    content_html = doc.summary(html_partial=True)
-    soup = BeautifulSoup(content_html, "lxml")
-    # Remove scripts/styles
-    for tag in soup(["script", "style", "noscript"]): tag.decompose()
-    text = soup.get_text(separator=" ", strip=True)
-    return text
+    soup = BeautifulSoup(doc.summary(html_partial=True), "lxml")
+    for tag in soup(["script", "style", "noscript"]):
+        tag.decompose()
+    return soup.get_text(separator=" ", strip=True)
 
-def fetch_rss(url):
+def fetch_rss(url: str):
     feed = feedparser.parse(url)
     items = []
     for e in feed.entries[:10]:
-        url = clean_url(e.link)
-        title = e.title
+        u = clean_url(getattr(e, "link", ""))
+        t = getattr(e, "title", "").strip()
         date = None
         for key in ("published", "updated"):
-            if getattr(e, key, None):
+            val = getattr(e, key, None)
+            if val:
                 try:
-                    date = dtparser.parse(getattr(e,key))
+                    date = dtparser.parse(val)
                     break
-                except: pass
-        items.append({"title": title, "url": url, "date": date})
+                except:
+                    pass
+        if u and t:
+            items.append({"title": t, "url": u, "date": date})
     return items
 
-def fetch_list_html(url):
-    # Fetch list page and grab obvious article links
+def fetch_list_html(url: str):
     res = requests.get(url, headers=HEADERS, timeout=20)
     res.raise_for_status()
     soup = BeautifulSoup(res.text, "lxml")
-    links = []
+    out, seen = [], set()
     for a in soup.select("a[href]"):
-        href = a["href"]
-        if href.startswith("#"): continue
-        if href.startswith("/"): href = f"{urlparse(url).scheme}://{urlparse(url).netloc}{href}"
-        text = a.get_text(strip=True)
-        # Heuristic: keep longer texts that look like headlines
-        if len(text.split()) >= 4:
-            links.append((text, clean_url(href)))
-    # Deduplicate by URL
-    seen, out = set(), []
-    for t,u in links:
-        if u not in seen:
-            seen.add(u)
-            out.append({"title": t, "url": u, "date": None})
-    return out[:10]
+        href = a["href"].strip()
+        if href.startswith("#"):
+            continue
+        if href.startswith("/"):
+            base = f"{urlparse(url).scheme}://{urlparse(url).netloc}"
+            href = base + href
+        title = a.get_text(strip=True)
+        if len(title.split()) >= 4:
+            u = clean_url(href)
+            if u not in seen:
+                seen.add(u)
+                out.append({"title": title, "url": u, "date": None})
+        if len(out) >= 10:
+            break
+    return out
 
 def load_sources(path="sources.yml"):
     with open(path, "r", encoding="utf-8") as f:
         return yaml.safe_load(f)
 
-def country_flag_for_ai(source_domain, title):
-    # Map by domain or keywords
+def dedupe(items):
+    seen, out = set(), []
+    for it in items:
+        key = (it["title"].strip().lower(), it["url"])
+        if key not in seen:
+            seen.add(key)
+            out.append(it)
+    return out
+
+# ---------- Summarisation & formatting
+def summarize_to_sentences(text: str, max_sents=4):
+    text = re.sub(r"\s+", " ", text).strip()
+    if not text or len(text.split()) < 40:
+        return [text] if text else []
+    parser = PlaintextParser.from_string(text, Tokenizer("english"))
+    summ = TextRankSummarizer()
+    sents = [str(s) for s in summ(parser.document, max_sents)]
+    if not sents:
+        # fallback: first N sentences
+        sents = re.split(r"(?<=[.!?])\s+", text)[:max_sents]
+    # Full sentences with terminal punctuation
+    sents = [s if s.endswith(('.', '!', '?')) else s + '.' for s in sents]
+    return [s for s in sents if len(s.split()) > 3][:max_sents]
+
+def bold_key_bits(s: str) -> str:
+    # Bold numbers, currencies, percents, dates, short all-caps (≤5)
+    patterns = [
+        r"(£|\$|€)\s?\d[\d,\.]*",
+        r"\b\d{1,3}(,\d{3})+(\.\d+)?\b",
+        r"\b\d+(\.\d+)?\s?%",
+        r"\b(?:Q[1-4]|H[1-2]|FY\d{2}|FY\d{4})\b",
+        r"\b(?:\d{4}|\d{1,2}\s?[A-Z][a-z]{2,9})\b"
+    ]
+    for p in patterns:
+        s = re.sub(p, lambda m: f"<b>{m.group(0)}</b>", s)
+    return s
+
+def html_link(text, url):
+    return f'<a href="{html.escape(url, quote=True)}">{html.escape(text)}</a>'
+
+def make_bullets(text: str, max_sents=4):
+    return [f"- {bold_key_bits(s)}" for s in summarize_to_sentences(text, max_sents=max_sents)]
+
+def country_flag_for_ai(source_domain: str, title: str):
     domain = source_domain.lower()
     t = title.lower()
     mapping = {
@@ -135,136 +191,77 @@ def country_flag_for_ai(source_domain, title):
     for key, flag in mapping.items():
         if key in domain or key in t:
             return flag
-    return ""  # none
+    return ""
 
-def dedupe(items):
-    seen = set(); out=[]
-    for it in items:
-        key = (it["title"].strip().lower(), it["url"])
-        if key not in seen:
-            seen.add(key); out.append(it)
-    return out
-
-def recent_only(items, days=2):
-    cutoff = datetime.utcnow() - timedelta(days=days)
-    out=[]
-    for it in items:
-        if it["date"] is None:
-            out.append(it)  # keep when unknown but will be filtered by content later
-        else:
-            if it["date"].replace(tzinfo=None) >= cutoff:
-                out.append(it)
-    return out
-
-def make_bullets(text, max_sents=4):
-    sents = summarize_to_sentences(text, max_sents=max_sents)
-    bullets = []
-    for s in sents:
-        s = bold_key_bits(s)
-        bullets.append(f"- {s}")
-    return bullets
-
-def article_to_block(item, section="carbon", add_flag=False):
+def article_block(item, section="carbon", add_flag=False):
     title = item["title"].strip()
     url = item["url"]
-    source = urlparse(url).netloc.replace("www.","")
-    flag = ""
-    if section=="ai" and add_flag:
+    source = urlparse(url).netloc.replace("www.", "")
+    if section == "ai" and add_flag:
         flag = country_flag_for_ai(source, title)
-        title = f"{flag} {title}" if flag else title
-    # Get content
+        if flag:
+            title = f"{flag} {title}"
     try:
         text = extract_readable(url)
     except Exception:
         text = title
-    bullets = make_bullets(text, max_sents=4)[:4]
+    bullets = make_bullets(text, MAX_BULLETS_PER_ITEM)
     link = html_link("Source", url)
-    block = []
-    block.append(f"📰 {html.escape(title)}")
-    block.extend(bullets)
-    block.append(link)
-    return "\n".join(block)
+    lines = [f"📰 {html.escape(title)}"] + bullets + [link]
+    return "\n".join(lines)
 
 def fetch_section(name, conf):
-    items=[]
+    items = []
     for r in conf.get("rss", []):
-        try: items.extend(fetch_rss(r))
-        except: pass
+        try:
+            items.extend(fetch_rss(r))
+        except Exception:
+            pass
     for h in conf.get("html", []):
-        try: items.extend(fetch_list_html(h))
-        except: pass
-    items = dedupe(items)
-    items = items[:8]
+        try:
+            items.extend(fetch_list_html(h))
+        except Exception:
+            pass
+    items = dedupe(items)[:8]
     return items
 
+# ---------- Crypto prices & meme watcher
 def coingecko_prices(ids):
-    # Free, no key
     qs = ",".join(ids)
     url = f"https://api.coingecko.com/api/v3/simple/price?ids={qs}&vs_currencies=usd&include_24hr_change=true"
-    r = requests.get(url, timeout=20, headers=HEADERS)
+    r = requests.get(url, headers=HEADERS, timeout=20)
     r.raise_for_status()
     return r.json()
 
 def crypto_prices_block():
     ids_map = {
-        "bitcoin":"BTC","ethereum":"ETH","ripple":"XRP","solana":"SOL",
-        "dogecoin":"DOGE","shiba-inu":"SHIB","pepe":"PEPE"
+        "bitcoin": "BTC", "ethereum": "ETH", "ripple": "XRP", "solana": "SOL",
+        "dogecoin": "DOGE", "shiba-inu": "SHIB", "pepe": "PEPE"
     }
     data = coingecko_prices(list(ids_map.keys()))
-    # Headline prices
-    wanted = ["bitcoin","ethereum","ripple","solana"]
-    lines=["💰 Crypto Prices (07:30 UK)"]
-    for k in wanted:
-        sym = ids_map[k]
+    lines = ["💰 Crypto Prices (07:30 UK)"]
+    for k in ["bitcoin", "ethereum", "ripple", "solana"]:
         if k in data:
+            sym = ids_map[k]
             price = data[k]["usd"]
             chg = data[k].get("usd_24h_change", 0.0)
             lines.append(f"- {sym}: ${price:,.2f} ({chg:+.1f}%)")
-    # Meme coin watch if notable
-    notable=[]
-    for mem in ["dogecoin","shiba-inu","pepe"]:
-        if mem in data:
-            chg = data[mem].get("usd_24h_change", 0.0)
+    notable = []
+    for k in ["dogecoin", "shiba-inu", "pepe"]:
+        if k in data:
+            chg = data[k].get("usd_24h_change", 0.0)
             if abs(chg) >= 10:
-                notable.append((mem, chg, data[mem]["usd"]))
+                notable.append((k, chg, data[k]["usd"]))
     if notable:
         lines.append("\nMeme coin watch")
-        for mem, chg, price in sorted(notable, key=lambda x: -abs(x[1])):
-            sym = ids_map[mem]
+        for k, chg, price in sorted(notable, key=lambda x: -abs(x[1])):
+            sym = ids_map[k]
             lines.append(f"- {sym} moved {chg:+.1f}% in 24h to ${price:,.6f}".rstrip("0").rstrip("."))
     return "\n".join(lines)
 
-def build_message(sections):
-    d = now_london()
-    header = f"🌅 Daily Carbon–AI–Crypto — {d.strftime('%a, %d %b %Y')} (07:30 UK)"
-    parts = [header]
-    # Carbon
-    parts.append("\n🌍 Carbon Markets\n" + "━"*16)
-    parts.extend(sections.get("carbon_blocks", []) or ["- No major updates worth your time today."])
-    # AI
-    parts.append("\n🤖 AI Trends\n" + "━"*16)
-    parts.extend(sections.get("ai_blocks", []) or ["- No major updates worth your time today."])
-    # Crypto
-    parts.append("\n₿ Crypto\n" + "━"*16)
-    parts.extend(sections.get("crypto_blocks", []) or ["- No major updates worth your time today."])
-    parts.append(sections.get("prices_block",""))
-    # LinkedIn (optional)
-    if sections.get("linkedin_blocks"):
-        parts.append("\n🧵 From LinkedIn\n" + "━"*16)
-        parts.extend(sections["linkedin_blocks"])
-    # Telegram message limit is 4096 chars; split if needed
-    full = "\n\n".join(parts).strip()
-    chunks=[]
-    while len(full) > 4096:
-        cut = full.rfind("\n\n", 0, 3900)
-        if cut == -1: cut = 3900
-        chunks.append(full[:cut])
-        full = full[cut:]
-    chunks.append(full)
-    return chunks
-
+# ---------- LinkedIn (public URLs only)
 def linkedin_blocks(urls):
-    blocks=[]
+    blocks = []
     for u in urls or []:
         try:
             res = requests.get(u, headers=HEADERS, timeout=20)
@@ -274,56 +271,84 @@ def linkedin_blocks(urls):
             desc = soup.find("meta", property="og:description")
             t = title["content"].strip() if title and title.get("content") else "LinkedIn post"
             d = desc["content"].strip() if desc and desc.get("content") else "Public LinkedIn update."
-            d = clamp_sentences(d, 2)
+            d = re.split(r"(?<=[.!?])\s+", d)
+            d = " ".join(d[:2])  # up to 2 sentences
             d = bold_key_bits(d)
             blocks.append(f"{html.escape(t)}\n- {d}\n{html_link('View post', u)}")
-        except: 
+        except Exception:
             pass
     return blocks[:3]
 
-def send_to_telegram(text):
-    token = os.environ["TELEGRAM_BOT_TOKEN"]
-    chat_id = os.environ["TELEGRAM_CHAT_ID"]
-    url = f"https://api.telegram.org/bot{token}/sendMessage"
-    payload = {
-        "chat_id": chat_id,
-        "text": text,
-        "parse_mode": "HTML",
-        "disable_web_page_preview": True
-    }
-    r = requests.post(url, json=payload, timeout=20)
-    r.raise_for_status()
-    return r.json()
+# ---------- Build & send
+def build_message(sections):
+    d = now_london()
+    header = f"🌅 Daily Carbon–AI–Crypto — {d.strftime('%a, %d %b %Y')} (07:30 UK)"
+    parts = [header]
+
+    parts.append("\n🌍 Carbon Markets\n" + "━"*16)
+    parts.extend(sections.get("carbon_blocks") or ["- No major updates worth your time today."])
+
+    parts.append("\n🤖 AI Trends\n" + "━"*16)
+    parts.extend(sections.get("ai_blocks") or ["- No major updates worth your time today."])
+
+    parts.append("\n₿ Crypto\n" + "━"*16)
+    parts.extend(sections.get("crypto_blocks") or ["- No major updates worth your time today."])
+
+    if sections.get("prices_block"):
+        parts.append(sections["prices_block"])
+
+    if sections.get("linkedin_blocks"):
+        parts.append("\n🧵 From LinkedIn\n" + "━"*16)
+        parts.extend(sections["linkedin_blocks"])
+
+    # Telegram 4096 chars limit
+    full = "\n\n".join(parts).strip()
+    chunks = []
+    while len(full) > 4096:
+        cut = full.rfind("\n\n", 0, 3900)
+        if cut == -1:
+            cut = 3900
+        chunks.append(full[:cut])
+        full = full[cut:]
+    chunks.append(full)
+    return chunks
 
 def main():
     if not within_send_window():
-        print("Not in 07:30 London window; exiting without sending.")
+        print("Not in send window; exiting without sending.")
         return
 
     conf = load_sources("sources.yml")
 
-    # Collect sections
     sections = {}
-    for cat in ("carbon","ai","crypto"):
+    # Collect for each category
+    for cat in ("carbon", "ai", "crypto"):
         items = fetch_section(cat, conf.get(cat, {}))
-        blocks=[]
-        for it in items[:3]:  # up to 3 stories per section
+        blocks = []
+        for it in items[:MAX_ITEMS_PER_SECTION]:
             try:
-                blocks.append(article_to_block(it, section=cat, add_flag=True))
+                blocks.append(article_block(it, section=cat, add_flag=True))
             except Exception as e:
-                print(f"Skip {cat} item error: {e}")
+                print(f"Skip {cat} item: {e}")
         sections[f"{cat}_blocks"] = blocks
 
-    # Crypto prices & meme coins
+    # Prices
     try:
         sections["prices_block"] = crypto_prices_block()
     except Exception as e:
+        print(f"Prices error: {e}")
         sections["prices_block"] = ""
 
-    # LinkedIn (optional)
+    # LinkedIn (public only)
     sections["linkedin_blocks"] = linkedin_blocks(conf.get("linkedin_public_posts", []))
 
-    # Build & send
+    # Acknowledge manual update
+    if user_sent_update_recently():
+        try:
+            send_to_telegram("✅ Update received — sending the latest digest now.")
+        except Exception:
+            pass
+
     messages = build_message(sections)
     for m in messages:
         send_to_telegram(m)
@@ -331,3 +356,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
