@@ -2,11 +2,16 @@ name: Daily Telegram News
 
 on:
   schedule:
-    # Run at 06:30 and 07:30 UTC daily.
-    # Script will send only if local time is 07:30 Europe/London (handles BST/GMT).
-    - cron: "30 6 * * *"
-    - cron: "30 7 * * *"
+    - cron: "30 6 * * *"  # 06:30 UTC
+    - cron: "30 7 * * *"  # 07:30 UTC
   workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: daily-news
+  cancel-in-progress: false
 
 jobs:
   run:
@@ -19,11 +24,11 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-      - name: Install deps
+      - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
-      - name: Run bot (send if 07:30 London)
+      - name: Run bot (sends only at 07:30 London or if 'update' was sent)
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
