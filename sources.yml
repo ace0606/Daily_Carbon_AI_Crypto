@@ -1,23 +1,47 @@
 carbon:
   rss:
-    - https://climate.ec.europa.eu/news_en
-    - https://unfccc.int/rss.xml
+    - https://climate.ec.europa.eu/news_en                       # EU Climate Action news
+    - https://unfccc.int/rss.xml                                 # UNFCCC newsroom
+    - https://carbon-pulse.com/feed/?post_type=free_articles     # Carbon Pulse free section
+    - https://www.iea.org/rss/news.xml                           # International Energy Agency news
+    - https://news.mongabay.com/feed/                            # Mongabay environment & climate
+    - https://www.climatechangenews.com/feed/                    # Climate Change News
   html:
-    - https://icapcarbonaction.com/en/news
-    - https://www.gov.uk/government/announcements
+    - https://icapcarbonaction.com/en/news                       # ICAP carbon market news
+    - https://www.gov.uk/government/announcements                # UK government announcements
+    - https://www.weforum.org/agenda/archive/climate-change/     # WEF climate change articles
 
 ai:
   rss:
-    - https://deepmind.google/discover/blog/rss/
-    - https://openai.com/blog/rss/
+    - https://deepmind.google/discover/blog/rss/                 # DeepMind blog
+    - https://openai.com/blog/rss/                               # OpenAI blog
+    - https://huggingface.co/blog/feed                           # Hugging Face blog
+    - https://arxiv.org/rss/cs.AI                                # arXiv AI research papers
+    - https://ai.googleblog.com/feeds/posts/default              # Google AI blog
+    - https://blogs.nvidia.com/feed/                             # NVIDIA AI blog
   html:
-    - https://digital-strategy.ec.europa.eu/en/news
-    - https://www.aisi.gov.uk/news
+    - https://digital-strategy.ec.europa.eu/en/news              # EU AI news
+    - https://www.aisi.gov.uk/news                               # UK AI Safety Institute news
+    - https://www.anthropic.com/news                             # Anthropic news
+    - https://mistral.ai/news/                                   # Mistral AI news
+    - https://stability.ai/blog                                  # Stability AI blog
 
 crypto:
   rss:
-    - https://www.coindesk.com/arc/outboundfeeds/rss/
+    - https://www.coindesk.com/arc/outboundfeeds/rss/            # CoinDesk news
+    - https://cointelegraph.com/rss                              # CoinTelegraph news
+    - https://cryptoslate.com/feed/                              # CryptoSlate news
+    - https://www.theblock.co/rss                                # The Block (free section)
+    - https://decrypt.co/feed                                    # Decrypt crypto news
   html:
-    - https://www.fca.org.uk/news
+    - https://www.fca.org.uk/news                                # UK FCA news
+    - https://blog.binance.com/en                                # Binance blog
+    - https://blog.coinbase.com/                                 # Coinbase blog
+    - https://ethereum.foundation/blog                           # Ethereum Foundation blog
 
-linkedin_public_posts: []
+linkedin_public_posts:
+  - https://www.linkedin.com/company/international-carbon-action-partnership/
+  - https://www.linkedin.com/company/huggingface/
+  - https://www.linkedin.com/company/ethereum-foundation/
+  - https://www.linkedin.com/company/coinbase/
+  - https://www.linkedin.com/company/nvidia/
