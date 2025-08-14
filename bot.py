@@ -339,6 +339,13 @@ def coingecko_prices(ids):
 
 def crypto_prices_block():
     ids_map = {
-        "bitcoin": "BTC", "ethereum": "ETH", "ripple": "XRP", "solana": "SOL",
-        "dogecoin": "DOGE", "shiba-inu": "SHIB", "pepe": "
+        "bitcoin": "BTC",
+        "ethereum": "ETH",
+        "ripple": "XRP",
+        "solana": "SOL",
+        "dogecoin": "DOGE",
+        "shiba-inu": "SHIB",
+        "pepe": "PEPE"
+    }
+    data = coingecko_prices(list(ids_map.keys()))
 
