@@ -2,7 +2,7 @@ name: Telegram Update Listener
 
 on:
   schedule:
-    - cron: "*/5 * * * *"  # every 5 minutes
+    - cron: "*/5 * * * *"   # every 5 minutes
   workflow_dispatch: {}
 
 permissions:
@@ -19,27 +19,32 @@ jobs:
     steps:
       - name: Check out
         uses: actions/checkout@v4
+
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-      - name: Install dependencies
-      - name: Ping Telegram directly (sanity check)
-  env:
-    TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-    TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-  run: |
-    curl -sS -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
-      -d chat_id="${TELEGRAM_CHAT_ID}" \
-      -d text="Ping from GitHub Actions ✅" \
-      -d disable_web_page_preview=true
 
+      - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
-      - name: Run bot (will send if you wrote 'update' in last 5 mins)
+
+      # --- TEMP sanity check: prove token + chat_id can send ---
+      - name: Ping Telegram directly (sanity check)
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-          FORCE_SEND: 1   # TEMP: force send now
+        run: |
+          curl -sS -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+            -d chat_id="${TELEGRAM_CHAT_ID}" \
+            -d text="Ping from GitHub Actions ✅" \
+            -d disable_web_page_preview=true
+
+      - name: Run bot (will send if 07:30 or you wrote 'update')
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          # Uncomment this line to force an immediate send during testing:
+          # FORCE_SEND: 1
         run: python bot.py
