@@ -348,4 +348,140 @@ def crypto_prices_block():
         "pepe": "PEPE"
     }
     data = coingecko_prices(list(ids_map.keys()))
+    lines = ["💰 Crypto Prices (07:30 UK)"]
+    for k in ["bitcoin", "ethereum", "ripple", "solana"]:
+        if k in data:
+            sym = ids_map[k]
+            price = data[k]["usd"]
+            chg = data[k].get("usd_24h_change", 0.0)
+            lines.append(f"- {sym}: ${price:,.2f} ({chg:+.1f}%)")
+    notable = []
+    for k in ["dogecoin", "shiba-inu", "pepe"]:
+        if k in data:
+            chg = data[k].get("usd_24h_change", 0.0)
+            if abs(chg) >= 10:
+                notable.append((k, chg, data[k]["usd"]))
+    if notable:
+        lines.append("\nMeme coin watch")
+        for k, chg, price in sorted(notable, key=lambda x: -abs(x[1])):
+            sym = ids_map[k]
+            lines.append(f"- {sym} moved {chg:+.1f}% in 24h to ${price:,.6f}".rstrip("0").rstrip("."))
+    return "\n".join(lines)
+
+# ========= LinkedIn (public-only) =========
+def linkedin_blocks(urls):
+    blocks = []
+    for u in urls or []:
+        try:
+            res = requests.get(u, headers=HEADERS, timeout=20)
+            res.raise_for_status()
+            soup = BeautifulSoup(res.text, "lxml")
+            title = soup.find("meta", property="og:title")
+            desc = soup.find("meta", property="og:description")
+            t = title["content"].strip() if title and title.get("content") else "LinkedIn post"
+            d = desc["content"].strip() if desc and desc.get("content") else "Public LinkedIn update."
+            parts = re.split(r"(?<=[.!?])\s+", d)
+            d = " ".join(parts[:2])
+            d = bold_key_bits(d)
+            blocks.append(f"{html.escape(t)}\n- {d}\n{html_link('View post', u)}")
+        except Exception:
+            pass
+    return blocks[:3]
+
+# ========= Build & Send =========
+def build_message(sections):
+    d = now_london()
+    header = f"🌅 Daily Carbon–AI–Crypto — {d.strftime('%a, %d %b %Y')} (07:30 UK)"
+    parts = [header]
+
+    parts.append("\n🌍 Carbon Markets\n" + "━"*16)
+    parts.extend(sections.get("carbon_blocks") or ["- No major updates worth your time today."])
+
+    parts.append("\n🤖 AI Trends\n" + "━"*16)
+    parts.extend(sections.get("ai_blocks") or ["- No major updates worth your time today."])
+
+    parts.append("\n₿ Crypto\n" + "━"*16)
+    parts.extend(sections.get("crypto_blocks") or ["- No major updates worth your time today."])
+
+    if sections.get("prices_block"):
+        parts.append(sections["prices_block"])
+
+    if sections.get("linkedin_blocks"):
+        parts.append("\n🧵 From LinkedIn\n" + "━"*16)
+        parts.extend(sections["linkedin_blocks"])
+
+    # Telegram 4096 char limit
+    full = "\n\n".join(parts).strip()
+    chunks = []
+    while len(full) > 4096:
+        cut = full.rfind("\n\n", 0, 3900)
+        if cut == -1:
+            cut = 3900
+        chunks.append(full[:cut])
+        full = full[cut:]
+    chunks.append(full)
+    return chunks
+
+# (Optional) helpful debug prints so you can see the decision path
+def within_send_window():
+    print(f"[dbg] London now: {now_london().strftime('%Y-%m-%d %H:%M:%S')}")
+    if os.getenv("FORCE_SEND") == "1":
+        print("[dbg] FORCE_SEND=1 -> sending.")
+        return True
+    if user_sent_update_recently(max_age_seconds=FRESHNESS_WINDOW_SEC):
+        print("[dbg] Recent 'update' detected -> sending.")
+        return True
+    t = now_london()
+    inwin = (t.hour == 7 and 30 <= t.minute < 35)
+    print(f"[dbg] In 07:30 window? {inwin}")
+    return inwin
+
+def main():
+    if not within_send_window():
+        print("Not in send window; exiting without sending.")
+        return
+
+    conf = load_sources("sources.yml")
+    sections = {}
+
+    # Avoid repeats across days
+    already_sent = fetch_recent_sent_urls_from_telegram(days_back=HISTORY_LOOKBACK_DAYS)
+
+    for cat in ("carbon", "ai", "crypto"):
+        raw_items = fetch_section(cat, conf.get(cat, {}))
+        fresh_items = [it for it in raw_items if clean_url(it["url"]) not in already_sent]
+        items = fresh_items or raw_items
+        blocks, picked = [], 0
+        for it in items:
+            try:
+                blocks.append(article_block(it, section=cat, add_flag=True))
+                picked += 1
+                if picked >= MAX_ITEMS_PER_SECTION:
+                    break
+            except Exception as e:
+                print(f"Skip {cat} item: {e}")
+        sections[f"{cat}_blocks"] = blocks
+
+    try:
+        sections["prices_block"] = crypto_prices_block()
+    except Exception as e:
+        print(f"Prices error: {e}")
+        sections["prices_block"] = ""
+
+    sections["linkedin_blocks"] = linkedin_blocks(conf.get("linkedin_public_posts", []))
+
+    # Acknowledge manual update
+    if user_sent_update_recently(max_age_seconds=FRESHNESS_WINDOW_SEC):
+        try:
+            send_to_telegram("✅ Update received — sending the latest digest now.")
+        except Exception:
+            pass
+
+    for i, m in enumerate(build_message(sections), 1):
+        resp = send_to_telegram(m)
+        print(f"[dbg] sent chunk {i}, length={len(m)} chars, ok={bool(resp)}")
+        time.sleep(1)
+
+if __name__ == "__main__":
+    main()
 
